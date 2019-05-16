@@ -1,3 +1,172 @@
+#[macro_use]
+extern crate clap;
+extern crate bytes;
+extern crate futures;
+extern crate http;
+extern crate hyper;
+extern crate prost;
+extern crate tokio;
+extern crate tower_grpc;
+extern crate tower_hyper;
+extern crate tower_request_modifier;
+extern crate tower_service;
+extern crate tower_util;
+
+use clap::{App, Arg, SubCommand};
+use futures::{Future, Stream};
+use hyper::client::connect::{Destination, HttpConnector};
+use std::net::ToSocketAddrs;
+use tower_grpc::Request;
+use tower_hyper::{client, util};
+use tower_util::MakeService;
+
+pub mod node {
+    include!(concat!(env!("OUT_DIR"), "/ensicoin_rpc.rs"));
+}
+
+use node::{Address, ConnectPeerRequest, DisconnectPeerRequest, Peer};
+
+fn is_address(s: String) -> Result<(), String> {
+    let mut addrs = match s.to_socket_addrs() {
+        Ok(a) => a,
+        Err(e) => return Err(format!("cannot parse address: {}", e)),
+    };
+    match addrs.next() {
+        Some(_) => Ok(()),
+        None => Err("Could not resolve address".to_string()),
+    }
+}
+
+fn is_uri(s: String) -> Result<(), String> {
+    match s.parse::<http::Uri>() {
+        Ok(_) => Ok(()),
+        Err(e) => Err(format!("Invalid URI: {}", e)),
+    }
+}
+
+fn build_cli() -> App<'static, 'static> {
+    app_from_crate!()
+        .arg(
+            Arg::with_name("address")
+                .short("a")
+                .long("address")
+                .help("gRPC address of the remote port")
+                .required(true)
+                .takes_value(true)
+                .validator(is_uri)
+                .conflicts_with("completions"),
+        )
+        .arg(
+            Arg::with_name("completions")
+                .long("completions")
+                .help("Generates completion scripts for your shell")
+                .possible_values(&["bash", "fish", "zsh"])
+                .takes_value(true),
+        )
+        .subcommand(
+            SubCommand::with_name("connect")
+                .about("Connect the node to a remote peer")
+                .arg(
+                    Arg::with_name("address")
+                        .takes_value(true)
+                        .required(true)
+                        .validator(is_address),
+                ),
+        )
+        .subcommand(
+            SubCommand::with_name("disconnect")
+                .about("Disconnect the node from a peer")
+                .arg(
+                    Arg::with_name("address")
+                        .takes_value(true)
+                        .required(true)
+                        .validator(is_address),
+                ),
+        )
+}
+
 fn main() {
-    println!("Hello, world!");
+    let matches = build_cli().get_matches();
+
+    if matches.is_present("completions") {
+        let shell = matches.value_of("completions").unwrap();
+        build_cli().gen_completions_to("arc-cli", shell.parse().unwrap(), &mut std::io::stdout());
+        return;
+    }
+
+    let uri: http::Uri = matches.value_of("address").unwrap().parse().unwrap();
+    let dst = match Destination::try_from_uri(uri.clone()) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("Could not connect to {}: {}", uri, e);
+            return;
+        }
+    };
+    let connector = util::Connector::new(HttpConnector::new(4));
+    let settings = client::Builder::new().http2_only(true).clone();
+    let mut make_client = client::Connect::with_builder(connector, settings);
+    let rg = make_client
+        .make_service(dst)
+        .map_err(|e| {
+            panic!("HTTP/2 connection failed; err={:?}", e);
+        })
+        .and_then(move |conn| {
+            use node::client::Node;
+            let conn = tower_request_modifier::Builder::new()
+                .set_origin(uri)
+                .build(conn)
+                .unwrap();
+
+            Node::new(conn)
+                .ready()
+                .map_err(|e| eprintln!("client closed: {}", e))
+        });
+
+    match matches.subcommand() {
+        ("connect", Some(submatches)) => {
+            let mut addrs = submatches
+                .value_of("address")
+                .unwrap()
+                .to_socket_addrs()
+                .unwrap();
+            let conn_req = rg.and_then(move |mut client| {
+                let socket_addr = addrs.next().unwrap();
+                let address = Address {
+                    ip: format!("{}", socket_addr.ip()),
+                    port: socket_addr.port() as u32,
+                };
+                let peer = Peer {
+                    address: Some(address),
+                };
+                client
+                    .connect_peer(Request::new(ConnectPeerRequest { peer: Some(peer) }))
+                    .map_err(|e| eprintln!("Could not connect to peer: {}", e))
+                    .map(|_| ())
+            });
+            tokio::run(conn_req)
+        }
+        ("disconnect", Some(submatches)) => {
+            let mut addrs = submatches
+                .value_of("address")
+                .unwrap()
+                .to_socket_addrs()
+                .unwrap();
+            let conn_req = rg.and_then(move |mut client| {
+                let socket_addr = addrs.next().unwrap();
+                let address = Address {
+                    ip: format!("{}", socket_addr.ip()),
+                    port: socket_addr.port() as u32,
+                };
+                let peer = Peer {
+                    address: Some(address),
+                };
+                client
+                    .disconnect_peer(Request::new(DisconnectPeerRequest { peer: Some(peer) }))
+                    .map_err(|e| eprintln!("Could not connect to peer: {}", e))
+                    .map(|_| ())
+            });
+            tokio::run(conn_req)
+        }
+        _ => (),
+    }
 }
