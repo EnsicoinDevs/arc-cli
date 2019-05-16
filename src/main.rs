@@ -24,7 +24,7 @@ pub mod node {
     include!(concat!(env!("OUT_DIR"), "/ensicoin_rpc.rs"));
 }
 
-use node::{Address, ConnectPeerRequest, DisconnectPeerRequest, Peer};
+use node::{Address, ConnectPeerRequest, DisconnectPeerRequest, GetInfoRequest, Peer};
 
 fn is_address(s: String) -> Result<(), String> {
     let mut addrs = match s.to_socket_addrs() {
@@ -47,10 +47,10 @@ fn is_uri(s: String) -> Result<(), String> {
 fn build_cli() -> App<'static, 'static> {
     app_from_crate!()
         .arg(
-            Arg::with_name("address")
+            Arg::with_name("uri")
                 .short("a")
                 .long("address")
-                .help("gRPC address of the remote port")
+                .help("gRPC address of the node")
                 .required(true)
                 .takes_value(true)
                 .validator(is_uri)
@@ -83,6 +83,7 @@ fn build_cli() -> App<'static, 'static> {
                         .validator(is_address),
                 ),
         )
+        .subcommand(SubCommand::with_name("getinfo").about("Gets some information on the node"))
 }
 
 fn main() {
@@ -94,7 +95,7 @@ fn main() {
         return;
     }
 
-    let uri: http::Uri = matches.value_of("address").unwrap().parse().unwrap();
+    let uri: http::Uri = matches.value_of("uri").unwrap().parse().unwrap();
     let dst = match Destination::try_from_uri(uri.clone()) {
         Ok(d) => d,
         Err(e) => {
@@ -166,6 +167,31 @@ fn main() {
                     .map(|_| ())
             });
             tokio::run(conn_req)
+        }
+        ("getinfo", _) => {
+            let info_req = rg.and_then(|mut client| {
+                client
+                    .get_info(Request::new(GetInfoRequest {}))
+                    .map_err(|e| eprintln!("Error retrieving information: {}", e))
+                    .and_then(|response| {
+                        let response = response.into_inner();
+                        println!("Implementation: {}", &response.implementation);
+                        println!("Version: {}", response.protocol_version);
+                        println!(
+                            "Best Block Hash: {}",
+                            response
+                                .best_block_hash
+                                .iter()
+                                .map(|b| format!("{:x}", b))
+                                .fold(String::new(), |mut acc, hb| {
+                                    acc.push_str(&hb);
+                                    acc
+                                })
+                        );
+                        Ok(())
+                    })
+            });
+            tokio::run(info_req);
         }
         _ => (),
     }
