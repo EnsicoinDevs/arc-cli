@@ -44,6 +44,10 @@ fn is_uri(s: String) -> Result<(), String> {
     }
 }
 
+fn find_ipv4(s: &str) -> Option<std::net::SocketAddr> {
+    s.to_socket_addrs().unwrap().find(|s| s.is_ipv4())
+}
+
 fn build_cli() -> App<'static, 'static> {
     app_from_crate!()
         .arg(
@@ -125,13 +129,15 @@ fn main() {
 
     match matches.subcommand() {
         ("connect", Some(submatches)) => {
-            let mut addrs = submatches
-                .value_of("address")
-                .unwrap()
-                .to_socket_addrs()
-                .unwrap();
+            let addrs = submatches.value_of("address").unwrap();
+            let socket_addr = match find_ipv4(addrs) {
+                Some(a) => a,
+                None => {
+                    eprintln!("Could not resolve to ipv4");
+                    return;
+                }
+            };
             let conn_req = rg.and_then(move |mut client| {
-                let socket_addr = addrs.next().unwrap();
                 let address = Address {
                     ip: format!("{}", socket_addr.ip()),
                     port: socket_addr.port() as u32,
@@ -147,13 +153,15 @@ fn main() {
             tokio::run(conn_req)
         }
         ("disconnect", Some(submatches)) => {
-            let mut addrs = submatches
-                .value_of("address")
-                .unwrap()
-                .to_socket_addrs()
-                .unwrap();
+            let addrs = submatches.value_of("address").unwrap();
+            let socket_addr = match find_ipv4(addrs) {
+                Some(a) => a,
+                None => {
+                    eprintln!("Could not resolve to ipv4");
+                    return;
+                }
+            };
             let conn_req = rg.and_then(move |mut client| {
-                let socket_addr = addrs.next().unwrap();
                 let address = Address {
                     ip: format!("{}", socket_addr.ip()),
                     port: socket_addr.port() as u32,
