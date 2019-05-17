@@ -109,7 +109,7 @@ fn main() {
     let rg = make_client
         .make_service(dst)
         .map_err(|e| {
-            panic!("HTTP/2 connection failed; err={:?}", e);
+            eprintln!("HTTP/2 connection failed: {}", e);
         })
         .and_then(move |conn| {
             use node::client::Node;
