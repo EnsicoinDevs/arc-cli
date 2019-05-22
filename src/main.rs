@@ -13,7 +13,7 @@ extern crate tower_service;
 extern crate tower_util;
 
 use clap::{App, Arg, SubCommand};
-use futures::{Future, Stream};
+use futures::Future;
 use hyper::client::connect::{Destination, HttpConnector};
 use std::net::ToSocketAddrs;
 use tower_grpc::Request;
@@ -58,6 +58,7 @@ fn build_cli() -> App<'static, 'static> {
                 .required(true)
                 .takes_value(true)
                 .validator(is_uri)
+                .default_value("http://localhost:4225")
                 .conflicts_with("completions"),
         )
         .arg(
@@ -183,14 +184,28 @@ fn main() {
                     .map_err(|e| eprintln!("Error retrieving information: {}", e))
                     .and_then(|response| {
                         let response = response.into_inner();
-                        println!("Implementation: {}", &response.implementation);
-                        println!("Version: {}", response.protocol_version);
+                        println!("Informations: ");
+                        println!("\tNode:");
+                        println!("\t\tImplementation: {}", &response.implementation);
+                        println!("\t\tVersion: {}", response.protocol_version);
+                        println!("\tBlockchain: ");
                         println!(
-                            "Best Block Hash: {}",
+                            "\t\tBest Block Hash: {}",
                             response
                                 .best_block_hash
                                 .iter()
-                                .map(|b| format!("{:x}", b))
+                                .map(|b| format!("{:02x}", b))
+                                .fold(String::new(), |mut acc, hb| {
+                                    acc.push_str(&hb);
+                                    acc
+                                })
+                        );
+                        println!(
+                            "\t\tGenesis Hash: {}",
+                            response
+                                .genesis_block_hash
+                                .iter()
+                                .map(|b| format!("{:02x}", b))
                                 .fold(String::new(), |mut acc, hb| {
                                     acc.push_str(&hb);
                                     acc
