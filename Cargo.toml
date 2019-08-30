@@ -4,8 +4,11 @@ version = "0.1.0"
 authors = ["Quentin Boyer <qbsecond@gmail.com>"]
 edition = "2018"
 
+description = "gRPC CLI for ensicoin nodes"
+license = "GPL-3.0-or-later"
+repository = "https://github.com/EnsicoinDevs/arc-cli"
+
 [dependencies]
-clap = "2.33.0"
 futures = "0.1.28"
 bytes = "0.4.12"
 http = "0.1.18"
@@ -17,6 +20,7 @@ hyper = "0.12.33"
 tower-grpc = { version = "0.1.0", features = ["tower-hyper"] }
 tower-service = "0.2.0"
 tower-util = "0.1.0"
+
 structopt = "0.3.0"
 yansi = "0.5.0"
 
