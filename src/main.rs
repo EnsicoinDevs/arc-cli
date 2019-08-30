@@ -1,21 +1,7 @@
-#[macro_use]
-extern crate clap;
-extern crate bytes;
-extern crate futures;
-extern crate http;
-extern crate hyper;
-extern crate prost;
-extern crate tokio;
-extern crate tower_grpc;
-extern crate tower_hyper;
-extern crate tower_request_modifier;
-extern crate tower_service;
-extern crate tower_util;
-
-use clap::{App, Arg, SubCommand};
 use futures::Future;
 use hyper::client::connect::{Destination, HttpConnector};
 use std::net::ToSocketAddrs;
+use structopt::StructOpt;
 use tower_grpc::Request;
 use tower_hyper::{client, util};
 use tower_util::MakeService;
@@ -26,81 +12,68 @@ pub mod node {
 
 use node::{Address, ConnectPeerRequest, DisconnectPeerRequest, GetInfoRequest, Peer};
 
-fn is_address(s: String) -> Result<(), String> {
-    let mut addrs = match s.to_socket_addrs() {
-        Ok(a) => a,
-        Err(e) => return Err(format!("cannot parse address: {}", e)),
-    };
-    match addrs.next() {
-        Some(_) => Ok(()),
-        None => Err("Could not resolve address".to_string()),
-    }
+#[derive(StructOpt)]
+#[structopt(name = "arc-cli", about = "A CLI to use with an ensicoin node")]
+struct Config {
+    #[structopt(
+        about = "The address of the local node",
+        default_value = "http://localhost:4225"
+    )]
+    node_address: http::Uri,
+    #[structopt(subcommand)]
+    action: Action,
 }
 
-fn is_uri(s: String) -> Result<(), String> {
-    match s.parse::<http::Uri>() {
-        Ok(_) => Ok(()),
-        Err(e) => Err(format!("Invalid URI: {}", e)),
-    }
+#[derive(StructOpt)]
+enum Action {
+    #[structopt(about = "information on the node")]
+    GetInfo,
+    #[structopt(about = "connect to another node")]
+    Connect { address: String },
+    #[structopt(about = "disconnect from another node")]
+    Disconnect { address: String },
 }
 
 fn find_ipv4(s: &str) -> Option<std::net::SocketAddr> {
     s.to_socket_addrs().unwrap().find(|s| s.is_ipv4())
 }
 
-fn build_cli() -> App<'static, 'static> {
-    app_from_crate!()
-        .arg(
-            Arg::with_name("uri")
-                .short("a")
-                .long("address")
-                .help("gRPC address of the node")
-                .required(true)
-                .takes_value(true)
-                .validator(is_uri)
-                .default_value("http://localhost:4225")
-                .conflicts_with("completions"),
-        )
-        .arg(
-            Arg::with_name("completions")
-                .long("completions")
-                .help("Generates completion scripts for your shell")
-                .possible_values(&["bash", "fish", "zsh"])
-                .takes_value(true),
-        )
-        .subcommand(
-            SubCommand::with_name("connect")
-                .about("Connect the node to a remote peer")
-                .arg(
-                    Arg::with_name("address")
-                        .takes_value(true)
-                        .required(true)
-                        .validator(is_address),
-                ),
-        )
-        .subcommand(
-            SubCommand::with_name("disconnect")
-                .about("Disconnect the node from a peer")
-                .arg(
-                    Arg::with_name("address")
-                        .takes_value(true)
-                        .required(true)
-                        .validator(is_address),
-                ),
-        )
-        .subcommand(SubCommand::with_name("getinfo").about("Gets some information on the node"))
+fn print_getinfo(
+    implementation: &str,
+    protocol_version: u32,
+    best_block_hash: &str,
+    genesis_hash: &str,
+) {
+    use yansi::Paint;
+    println!("{}", Paint::green("Node information").underline().bold());
+    println!("    {}", Paint::new("Node").underline().bold());
+    println!(
+        "        {}: {}",
+        Paint::new("Name").underline(),
+        implementation
+    );
+    println!(
+        "        {}: {}",
+        Paint::new("Protocol version").underline(),
+        protocol_version
+    );
+    println!("    {}", Paint::new("Chain").underline().bold());
+    println!(
+        "        {}: {}",
+        Paint::new("Best hash").underline(),
+        best_block_hash
+    );
+    println!(
+        "        {}: {}",
+        Paint::new("Genesis hash").underline(),
+        genesis_hash
+    );
 }
 
 fn main() {
-    let matches = build_cli().get_matches();
+    let config = Config::from_args();
 
-    if matches.is_present("completions") {
-        let shell = matches.value_of("completions").unwrap();
-        build_cli().gen_completions_to("arc-cli", shell.parse().unwrap(), &mut std::io::stdout());
-        return;
-    }
-
-    let uri: http::Uri = matches.value_of("uri").unwrap().parse().unwrap();
+    let uri: http::Uri = config.node_address;
     let dst = match Destination::try_from_uri(uri.clone()) {
         Ok(d) => d,
         Err(e) => {
@@ -128,10 +101,41 @@ fn main() {
                 .map_err(|e| eprintln!("client closed: {}", e))
         });
 
-    match matches.subcommand() {
-        ("connect", Some(submatches)) => {
-            let addrs = submatches.value_of("address").unwrap();
-            let socket_addr = match find_ipv4(addrs) {
+    match config.action {
+        Action::GetInfo => {
+            let info_req = rg.and_then(|mut client| {
+                client
+                    .get_info(Request::new(GetInfoRequest {}))
+                    .map_err(|e| eprintln!("Error retrieving information: {}", e))
+                    .and_then(|response| {
+                        let response = response.into_inner();
+                        print_getinfo(
+                            &response.implementation,
+                            response.protocol_version,
+                            &response
+                                .best_block_hash
+                                .iter()
+                                .map(|b| format!("{:02x}", b))
+                                .fold(String::new(), |mut acc, hb| {
+                                    acc.push_str(&hb);
+                                    acc
+                                }),
+                            &response
+                                .genesis_block_hash
+                                .iter()
+                                .map(|b| format!("{:02x}", b))
+                                .fold(String::new(), |mut acc, hb| {
+                                    acc.push_str(&hb);
+                                    acc
+                                }),
+                        );
+                        Ok(())
+                    })
+            });
+            tokio::run(info_req);
+        }
+        Action::Connect { address } => {
+            let socket_addr = match find_ipv4(&address) {
                 Some(a) => a,
                 None => {
                     eprintln!("Could not resolve to ipv4");
@@ -153,9 +157,8 @@ fn main() {
             });
             tokio::run(conn_req)
         }
-        ("disconnect", Some(submatches)) => {
-            let addrs = submatches.value_of("address").unwrap();
-            let socket_addr = match find_ipv4(addrs) {
+        Action::Disconnect { address } => {
+            let socket_addr = match find_ipv4(&address) {
                 Some(a) => a,
                 None => {
                     eprintln!("Could not resolve to ipv4");
@@ -177,45 +180,5 @@ fn main() {
             });
             tokio::run(conn_req)
         }
-        ("getinfo", _) => {
-            let info_req = rg.and_then(|mut client| {
-                client
-                    .get_info(Request::new(GetInfoRequest {}))
-                    .map_err(|e| eprintln!("Error retrieving information: {}", e))
-                    .and_then(|response| {
-                        let response = response.into_inner();
-                        println!("Informations: ");
-                        println!("\tNode:");
-                        println!("\t\tImplementation: {}", &response.implementation);
-                        println!("\t\tVersion: {}", response.protocol_version);
-                        println!("\tBlockchain: ");
-                        println!(
-                            "\t\tBest Block Hash: {}",
-                            response
-                                .best_block_hash
-                                .iter()
-                                .map(|b| format!("{:02x}", b))
-                                .fold(String::new(), |mut acc, hb| {
-                                    acc.push_str(&hb);
-                                    acc
-                                })
-                        );
-                        println!(
-                            "\t\tGenesis Hash: {}",
-                            response
-                                .genesis_block_hash
-                                .iter()
-                                .map(|b| format!("{:02x}", b))
-                                .fold(String::new(), |mut acc, hb| {
-                                    acc.push_str(&hb);
-                                    acc
-                                })
-                        );
-                        Ok(())
-                    })
-            });
-            tokio::run(info_req);
-        }
-        _ => (),
     }
 }
